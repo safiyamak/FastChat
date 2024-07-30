@@ -1,19 +1,25 @@
 """
 A model worker that executes the model.
 """
-import argparse
-import base64
-import gc
-import json
+import sys
 import os
-from typing import List, Optional
-import uuid
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+grandparent_dir = os.path.dirname(parent_dir)
+sys.path.insert(0, grandparent_dir)
 
-import torch
-import torch.nn.functional as F
-from transformers import set_seed
 import uvicorn
+from transformers import set_seed
+import torch.nn.functional as F
+import torch
 
+import uuid
+from typing import List, Optional
+
+import json
+import gc
+import base64
+import argparse
 from fastchat.constants import ErrorCode, SERVER_ERROR_MSG
 from fastchat.model.model_adapter import (
     load_model,
@@ -30,7 +36,6 @@ from fastchat.utils import (
     get_context_length,
     str_to_torch_dtype,
 )
-
 worker_id = str(uuid.uuid4())[:8]
 logger = build_logger("model_worker", f"model_worker_{worker_id}.log")
 
@@ -73,7 +78,8 @@ class ModelWorker(BaseModelWorker):
             conv_template=conv_template,
         )
 
-        logger.info(f"Loading the model {self.model_names} on worker {worker_id} ...")
+        logger.info(
+            f"Loading the model {self.model_names} on worker {worker_id} ...")
         self.model, self.tokenizer = load_model(
             model_path,
             revision=revision,
@@ -93,7 +99,8 @@ class ModelWorker(BaseModelWorker):
         if self.tokenizer.pad_token == None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         self.context_len = get_context_length(self.model.config)
-        self.generate_stream_func = get_generate_stream_function(self.model, model_path)
+        self.generate_stream_func = get_generate_stream_function(
+            self.model, model_path)
         self.stream_interval = stream_interval
         self.embed_in_truncate = embed_in_truncate
         self.seed = seed
@@ -229,8 +236,9 @@ class ModelWorker(BaseModelWorker):
                 all_embeddings = []
                 all_token_num = 0
                 for i in range(0, input_ids.size(1), self.context_len):
-                    chunk_input_ids = input_ids[:, i : i + self.context_len]
-                    chunk_attention_mask = attention_mask[:, i : i + self.context_len]
+                    chunk_input_ids = input_ids[:, i: i + self.context_len]
+                    chunk_attention_mask = attention_mask[:,
+                                                          i: i + self.context_len]
 
                     # add cls token and mask to get cls embedding
                     if (
@@ -270,7 +278,8 @@ class ModelWorker(BaseModelWorker):
                     all_token_num += token_num
 
                 all_embeddings_tensor = torch.stack(all_embeddings)
-                embedding = torch.sum(all_embeddings_tensor, dim=0) / all_token_num
+                embedding = torch.sum(
+                    all_embeddings_tensor, dim=0) / all_token_num
                 normalized_embeddings = F.normalize(embedding, p=2, dim=1)
 
                 ret["token_num"] = all_token_num
@@ -304,7 +313,8 @@ def create_model_worker():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", type=str, default="localhost")
     parser.add_argument("--port", type=int, default=21002)
-    parser.add_argument("--worker-address", type=str, default="http://localhost:21002")
+    parser.add_argument("--worker-address", type=str,
+                        default="http://localhost:21002")
     parser.add_argument(
         "--controller-address", type=str, default="http://localhost:21001"
     )

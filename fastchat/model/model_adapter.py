@@ -6,6 +6,7 @@ import re
 import sys
 from typing import Dict, List, Optional
 import warnings
+import uuid
 
 if sys.version_info >= (3, 9):
     from functools import cache
@@ -23,6 +24,8 @@ from transformers import (
     LlamaTokenizer,
     LlamaForCausalLM,
     T5Tokenizer,
+    AutoModelForPreTraining,
+    AutoProcessor
 )
 
 from fastchat.constants import CPU_ISA
@@ -45,12 +48,14 @@ from fastchat.modules.exllama import ExllamaConfig, load_exllama_model
 from fastchat.modules.xfastertransformer import load_xft_model, XftConfig
 from fastchat.modules.gptq import GptqConfig, load_gptq_quantized
 from fastchat.utils import get_gpu_memory
-
+from fastchat.utils import build_logger
 # Check an environment variable to check if we should be sharing Peft model
 # weights.  When false we treat all Peft models as separate.
 peft_share_base_weights = (
     os.environ.get("PEFT_SHARE_BASE_WEIGHTS", "false").lower() == "true"
 )
+worker_id = str(uuid.uuid4())[:8]
+logger = build_logger("model_adapter", f"model_worker_{worker_id}.log")
 
 ANTHROPIC_MODEL_LIST = (
     "claude-1",
@@ -156,11 +161,14 @@ def get_model_adapter(model_path: str) -> BaseModelAdapter:
     # Try the basename of model_path at first
     for adapter in model_adapters:
         if adapter.match(model_path_basename) and type(adapter) != BaseModelAdapter:
+            logger.info(
+                f"1 Using model adapter: {type(adapter).__name__}\n\n\n")
             return adapter
 
     # Then try the full path
     for adapter in model_adapters:
         if adapter.match(model_path):
+            print(f"2 Using model adapter: {type(adapter).__name__}\n\n\n")
             return adapter
 
     raise ValueError(f"No valid model adapter for {model_path}")
@@ -242,7 +250,8 @@ def load_model(
                     for i in range(num_gpus)
                 }
             else:
-                kwargs["max_memory"] = {i: max_gpu_memory for i in range(num_gpus)}
+                kwargs["max_memory"] = {
+                    i: max_gpu_memory for i in range(num_gpus)}
     elif device == "mps":
         kwargs = {"torch_dtype": torch.float16}
         import transformers
@@ -356,7 +365,8 @@ def load_model(
             from modelscope.hub.snapshot_download import snapshot_download
 
             if not os.path.exists(model_path):
-                model_path = snapshot_download(model_id=model_path, revision=revision)
+                model_path = snapshot_download(
+                    model_id=model_path, revision=revision)
         except ImportError as e:
             warnings.warn(
                 "Use model from www.modelscope.cn need pip install modelscope"
@@ -364,6 +374,7 @@ def load_model(
             raise e
 
     # Load model
+    logger.info(f"Loading model from {model_path}")
     model, tokenizer = adapter.load_model(model_path, kwargs)
 
     if (
@@ -381,7 +392,8 @@ def load_model(
         model.to(device)
 
     if device == "xpu":
-        model = torch.xpu.optimize(model, dtype=kwargs["torch_dtype"], inplace=True)
+        model = torch.xpu.optimize(
+            model, dtype=kwargs["torch_dtype"], inplace=True)
 
     if debug:
         print(model)
@@ -897,7 +909,8 @@ class DollyV2Adapter(BaseModelAdapter):
 
     def load_model(self, model_path: str, from_pretrained_kwargs: dict):
         revision = from_pretrained_kwargs.get("revision", "main")
-        tokenizer = AutoTokenizer.from_pretrained(model_path, revision=revision)
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path, revision=revision)
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             low_cpu_mem_usage=True,
@@ -1243,7 +1256,8 @@ class RedPajamaINCITEAdapter(BaseModelAdapter):
 
     def load_model(self, model_path: str, from_pretrained_kwargs: dict):
         revision = from_pretrained_kwargs.get("revision", "main")
-        tokenizer = AutoTokenizer.from_pretrained(model_path, revision=revision)
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path, revision=revision)
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             low_cpu_mem_usage=True,
@@ -1390,7 +1404,8 @@ class FalconAdapter(BaseModelAdapter):
     def load_model(self, model_path: str, from_pretrained_kwargs: dict):
         revision = from_pretrained_kwargs.get("revision", "main")
         # Strongly suggest using bf16, which is recommended by the author of Falcon
-        tokenizer = AutoTokenizer.from_pretrained(model_path, revision=revision)
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_path, revision=revision)
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             low_cpu_mem_usage=True,
@@ -2129,7 +2144,8 @@ class PygmalionAdapter(BaseModelAdapter):
 
     def match(self, model_path: str):
         return bool(
-            re.search(r"pygmalion|mythalion|metharme", model_path.lower(), re.I)
+            re.search(r"pygmalion|mythalion|metharme",
+                      model_path.lower(), re.I)
         )
 
     def get_default_conv_template(self, model_path: str) -> Conversation:
@@ -2149,7 +2165,8 @@ class XdanAdapter(BaseModelAdapter):
 class MicrosoftOrcaAdapter(BaseModelAdapter):
     """The model adapter for Microsoft/Orca-2 series of models (e.g. Microsoft/Orca-2-7b, Microsoft/Orca-2-13b)"""
 
-    use_fast_tokenizer = False  # Flag neeeded since tokenizers>=0.13.3 is required for a normal functioning of this module
+    # Flag neeeded since tokenizers>=0.13.3 is required for a normal functioning of this module
+    use_fast_tokenizer = False
 
     def match(self, model_path: str):
         return "orca-2" in model_path.lower()
@@ -2311,7 +2328,31 @@ class LlavaAdapter(BaseModelAdapter):
 
     def load_model(self, model_path: str, from_pretrained_kwargs: dict):
         # TODO(chris): Implement huggingface-compatible load_model
-        pass
+
+        model = AutoModelForPreTraining.from_pretrained(model_path, trust_remote_code=True,
+                                                        **from_pretrained_kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+        tokenizer.add_tokens(
+            [
+                "<sep>",
+                "<pad>",
+                "<mask>",
+                "<predict>",
+                "<FIM_SUFFIX>",
+                "<FIM_PREFIX>",
+                "<FIM_MIDDLE>",
+                "<commit_before>",
+                "<commit_msg>",
+                "<commit_after>",
+                "<jupyter_start>",
+                "<jupyter_text>",
+                "<jupyter_code>",
+                "<jupyter_output>",
+                "<empty_output>",
+            ],
+            special_tokens=True,
+        )
+        return model, tokenizer
 
     def match(self, model_path: str):
         return "llava" in model_path.lower()
