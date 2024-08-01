@@ -1,41 +1,36 @@
 """
 A model worker that executes the model.
 """
-import sys
-import os
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-grandparent_dir = os.path.dirname(parent_dir)
-sys.path.insert(0, grandparent_dir)
-
-import uvicorn
-from transformers import set_seed
-import torch.nn.functional as F
-import torch
-
-import uuid
-from typing import List, Optional
-
-import json
-import gc
-import base64
-import argparse
-from fastchat.constants import ErrorCode, SERVER_ERROR_MSG
-from fastchat.model.model_adapter import (
-    load_model,
-    add_model_args,
-    get_generate_stream_function,
-)
-from fastchat.modules.awq import AWQConfig
-from fastchat.modules.exllama import ExllamaConfig
-from fastchat.modules.xfastertransformer import XftConfig
-from fastchat.modules.gptq import GptqConfig
-from fastchat.serve.base_model_worker import BaseModelWorker, app
 from fastchat.utils import (
     build_logger,
     get_context_length,
     str_to_torch_dtype,
 )
+from fastchat.serve.base_model_worker import BaseModelWorker, app
+from fastchat.modules.gptq import GptqConfig
+from fastchat.modules.xfastertransformer import XftConfig
+from fastchat.modules.exllama import ExllamaConfig
+from fastchat.modules.awq import AWQConfig
+from fastchat.model.model_adapter import (
+    load_model,
+    add_model_args,
+    get_generate_stream_function,
+)
+from fastchat.constants import ErrorCode, SERVER_ERROR_MSG
+import argparse
+import base64
+import gc
+import json
+from typing import List, Optional
+import uuid
+import torch
+import torch.nn.functional as F
+from transformers import set_seed
+import uvicorn
+import sys
+import os
+
+
 worker_id = str(uuid.uuid4())[:8]
 logger = build_logger("model_worker", f"model_worker_{worker_id}.log")
 
@@ -80,7 +75,7 @@ class ModelWorker(BaseModelWorker):
 
         logger.info(
             f"Loading the model {self.model_names} on worker {worker_id} ...")
-        self.model, self.tokenizer = load_model(
+        loaded_model = load_model(
             model_path,
             revision=revision,
             device=device,
@@ -95,6 +90,11 @@ class ModelWorker(BaseModelWorker):
             xft_config=xft_config,
             debug=debug,
         )
+        self.processor = None
+        if len(loaded_model) == 3:
+            self.model, self.tokenizer, self.processor = loaded_model
+        else:
+            self.model, self.tokenizer = loaded_model
         self.device = device
         if self.tokenizer.pad_token == None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -121,6 +121,7 @@ class ModelWorker(BaseModelWorker):
             for output in self.generate_stream_func(
                 self.model,
                 self.tokenizer,
+                self.processor,
                 params,
                 self.device,
                 self.context_len,

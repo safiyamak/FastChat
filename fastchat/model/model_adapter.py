@@ -161,14 +161,11 @@ def get_model_adapter(model_path: str) -> BaseModelAdapter:
     # Try the basename of model_path at first
     for adapter in model_adapters:
         if adapter.match(model_path_basename) and type(adapter) != BaseModelAdapter:
-            logger.info(
-                f"1 Using model adapter: {type(adapter).__name__}\n\n\n")
             return adapter
 
     # Then try the full path
     for adapter in model_adapters:
         if adapter.match(model_path):
-            print(f"2 Using model adapter: {type(adapter).__name__}\n\n\n")
             return adapter
 
     raise ValueError(f"No valid model adapter for {model_path}")
@@ -375,7 +372,11 @@ def load_model(
 
     # Load model
     logger.info(f"Loading model from {model_path}")
-    model, tokenizer = adapter.load_model(model_path, kwargs)
+    processor = None
+    if type(adapter) == LlavaAdapter:
+        model, tokenizer, processor = adapter.load_model(model_path, kwargs)
+    else:
+        model, tokenizer = adapter.load_model(model_path, kwargs)
 
     if (
         device == "cpu"
@@ -397,8 +398,10 @@ def load_model(
 
     if debug:
         print(model)
-
-    return model, tokenizer
+    if processor is not None:
+        return model, tokenizer, processor
+    else:
+        return model, tokenizer
 
 
 def get_conversation_template(model_path: str) -> Conversation:
@@ -2352,7 +2355,8 @@ class LlavaAdapter(BaseModelAdapter):
             ],
             special_tokens=True,
         )
-        return model, tokenizer
+        processor = AutoProcessor.from_pretrained(model_path)
+        return model, tokenizer, processor
 
     def match(self, model_path: str):
         return "llava" in model_path.lower()

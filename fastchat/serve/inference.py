@@ -8,9 +8,12 @@ import sys
 import time
 from typing import Iterable, Optional, Dict
 import warnings
-
-import psutil
+from io import BytesIO
+import base64
+from PIL import Image
 import torch
+import requests
+import psutil
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -50,7 +53,8 @@ def prepare_logits_processor(
     if temperature >= 1e-5 and temperature != 1.0:
         processor_list.append(TemperatureLogitsWarper(temperature))
     if repetition_penalty > 1.0:
-        processor_list.append(RepetitionPenaltyLogitsProcessor(repetition_penalty))
+        processor_list.append(
+            RepetitionPenaltyLogitsProcessor(repetition_penalty))
     if 1e-8 <= top_p < 1.0:
         processor_list.append(TopPLogitsWarper(top_p))
     if top_k > 0:
@@ -65,6 +69,7 @@ def generate_stream(
     params: Dict,
     device: str,
     context_len: int,
+    processor=None,
     stream_interval: int = 2,
     judge_sent_end: bool = False,
 ):
@@ -83,6 +88,22 @@ def generate_stream(
     echo = bool(params.get("echo", True))
     stop_str = params.get("stop", None)
     stop_token_ids = params.get("stop_token_ids", None) or []
+    image_link = params.get("images", None)
+    if image_link is not None and image_link != []:
+        image_link = image_link[0]  # only supports single images
+    image = None
+    if image_link and image_link != []:
+        if image_link.startswith('data:image'):
+            base64_str_index = image_link.find('base64,') + 7
+            image_data = base64.b64decode(image_link[base64_str_index:])
+            image = Image.open(BytesIO(image_data))
+        else:
+            response = requests.get(image_link)
+            image = Image.open(BytesIO(response.content))
+    inputs = None
+    if image is not None and processor is not None:
+        inputs = processor(prompt, image, return_tensors="pt").to(device)
+
     if tokenizer.eos_token_id not in stop_token_ids:
         stop_token_ids.append(tokenizer.eos_token_id)
 
@@ -101,7 +122,8 @@ def generate_stream(
     input_echo_len = len(input_ids)
 
     if model.config.is_encoder_decoder:
-        if logprobs is not None:  # FIXME: Support logprobs for encoder-decoder models.
+        # FIXME: Support logprobs for encoder-decoder models.
+        if logprobs is not None:
             raise NotImplementedError
         encoder_output = model.encoder(
             input_ids=torch.as_tensor([input_ids], device=device)
@@ -129,7 +151,12 @@ def generate_stream(
                 )
                 logits = model.lm_head(out[0])
             else:
-                out = model(input_ids=start_ids, use_cache=True)
+                # Processor must return attention_mask and pixel_values
+                if inputs is not None and inputs.get("pixel_values", None) != None and inputs.get("attention_mask", None) != None:
+                    out = model(input_ids=start_ids, pixel_values=inputs["pixel_values"].to(
+                        device), attention_mask=inputs["attention_mask"].to(device), use_cache=True)
+                else:
+                    out = model(input_ids=start_ids, use_cache=True)
                 logits = out.logits
             past_key_values = out.past_key_values
 
@@ -171,10 +198,12 @@ def generate_stream(
 
         if logits_processor:
             if repetition_penalty > 1.0:
-                tmp_output_ids = torch.as_tensor([output_ids], device=logits.device)
+                tmp_output_ids = torch.as_tensor(
+                    [output_ids], device=logits.device)
             else:
                 tmp_output_ids = None
-            last_token_logits = logits_processor(tmp_output_ids, logits[:, -1, :])[0]
+            last_token_logits = logits_processor(
+                tmp_output_ids, logits[:, -1, :])[0]
         else:
             last_token_logits = logits[0, -1, :]
 
@@ -266,7 +295,8 @@ def generate_stream(
                             stopped = True
                             break
                         else:
-                            partially_stopped = is_partial_stop(output, each_stop)
+                            partially_stopped = is_partial_stop(
+                                output, each_stop)
                             if partially_stopped:
                                 break
                 else:
@@ -401,7 +431,7 @@ def chat_loop(
         """
         Reprints the conversation from the start.
         """
-        for message in conv.messages[conv.offset :]:
+        for message in conv.messages[conv.offset:]:
             chatio.prompt_for_output(message[0])
             chatio.print_output(message[1])
 
